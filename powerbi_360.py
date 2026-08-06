@@ -193,6 +193,8 @@ def backup_data_folder(data_dir: str = "data", backup_root: str = "backup"):
 
 def _dump_visual_titles(page, label: str):
     """Save every visual title found on the page so the right one can be identified."""
+    if not VERBOSE:
+        return
     try:
         titles = page.locator("[class*='visualTitle']")
         texts = [titles.nth(i).inner_text().strip() for i in range(titles.count())]
@@ -369,7 +371,8 @@ def clear_all_slicers(page, timeout: int) -> None:
         page.wait_for_timeout(500)
     if box is None:
         vprint("[!] Could not find 'Clear all slicers' — continuing anyway")
-        page.screenshot(path="powerbi_debug_clear_slicers_failed.png", full_page=True)
+        if VERBOSE:
+            page.screenshot(path="powerbi_debug_clear_slicers_failed.png", full_page=True)
         return
     # Raw mouse click, like the slicer opener: Power BI intercepts pointer
     # events in ways that don't always satisfy Playwright's actionability checks.
@@ -441,8 +444,9 @@ def fill_serial_number(page, serial: str, timeout: int) -> bool:
             break
         page.wait_for_timeout(500)
 
-    page.screenshot(path="powerbi_debug_dropdown_open.png", full_page=True)
-    vprint("    Screenshot after opening dropdown : powerbi_debug_dropdown_open.png")
+    if VERBOSE:
+        page.screenshot(path="powerbi_debug_dropdown_open.png", full_page=True)
+        vprint("    Screenshot after opening dropdown : powerbi_debug_dropdown_open.png")
 
     if search_loc is not None:
         try:
@@ -480,7 +484,8 @@ def fill_serial_number(page, serial: str, timeout: int) -> bool:
     if option_el is None:
         vprint(f"[!] Could not find an option matching '{serial}' in the dropdown.")
         _dump_visual_titles(page, "serial_number")
-        page.screenshot(path="powerbi_debug_serial_number_dropdown.png", full_page=True)
+        if VERBOSE:
+            page.screenshot(path="powerbi_debug_serial_number_dropdown.png", full_page=True)
         return False
 
     page.keyboard.press("Escape")  # collapse the dropdown, committing the selection
@@ -794,7 +799,8 @@ def main():
             page.wait_for_selector("[class*='visualTitle']", timeout=args.timeout)
         except PWTimeout:
             print("[!] Report visuals did not appear.")
-            page.screenshot(path="powerbi_debug_load.png", full_page=True)
+            if VERBOSE:
+                page.screenshot(path="powerbi_debug_load.png", full_page=True)
             context.close()
             sys.exit(1)
         time.sleep(2)  # let visuals fully settle
