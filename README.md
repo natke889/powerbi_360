@@ -20,6 +20,14 @@ Verify it's installed and on PATH:
 python --version    # or python3 --version
 ```
 
+## Download
+
+Download the project as a zip file and extract it:
+
+[https://github.com/natke889/powerbi_360/archive/refs/tags/v1.zip](https://github.com/natke889/powerbi_360/archive/refs/tags/v1.zip)
+
+Then open a terminal in the extracted `powerbi_360-1` folder for the steps below.
+
 ## Setup
 
 Create a virtual environment and install dependencies, then have Playwright
