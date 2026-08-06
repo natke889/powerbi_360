@@ -1,8 +1,9 @@
 """
 powerbi_360.py
 --------------
-Selects a serial number in the SERIAL NUMBER slicer of a Power BI report
-and scrapes the resulting "OS Version" table column value.
+Selects a serial number in the SERIAL NUMBER slicer of a Power BI report and
+scrapes the resulting table row (Part Number, Status, warranty/support dates,
+etc.), plus a computed Alert column, to CSV/text output files.
 
 Usage
 -----
@@ -36,6 +37,11 @@ Options
   --no-headless    Run with a visible browser window
   --verbose        Show detailed step-by-step progress logs (default: minimal
                    output, one line per serial with success/failure)
+  --resume         Skip serials already present in --out and append new
+                   results to it instead of overwriting, so you can stop and
+                   re-run later and pick up where you left off
+  --alert MONTHS   Number of months ahead to flag the Alert column as 'Y'
+                   (default: 12)
   --serials NUMBER Serial number(s) to select in the SERIAL NUMBER slicer,
                    comma-separated for bulk mode e.g. 792349000111,951946000252
                    (default: 792349000111)
@@ -591,8 +597,13 @@ ALERT_DATE_FIELDS = [
 
 
 def compute_alert(results: dict, months: int = 12) -> str:
-    """"Y" if any ALERT_DATE_FIELDS value falls within the next `months` months, else "N"."""
+    """"Y"/"N" based on ALERT_DATE_FIELDS falling within the next `months` months.
+
+    Returns "" if none of the date fields have a usable value (e.g. the serial
+    wasn't found), so blank rows don't get a misleading "N".
+    """
     threshold = datetime.now() + timedelta(days=round(months * 365 / 12))
+    found_date = False
     for field in ALERT_DATE_FIELDS:
         value = results.get(field, "").strip()
         if not value or value.upper() == "N":
@@ -601,9 +612,10 @@ def compute_alert(results: dict, months: int = 12) -> str:
             date = datetime.strptime(value, "%m/%d/%Y")
         except ValueError:
             continue
+        found_date = True
         if date <= threshold:
             return "Y"
-    return "N"
+    return "N" if found_date else ""
 
 
 def process_serial(page, serial: str, args) -> dict:
