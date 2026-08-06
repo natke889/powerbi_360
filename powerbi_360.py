@@ -24,6 +24,11 @@ Bulk mode  : python powerbi_360.py --serials 792349000111,951946000252
              Same bulk behavior, reading serials from a file (one per line,
              blank lines / lines starting with '#' ignored) instead.
 
+             python powerbi_360.py --raw-dir raw
+             Same bulk behavior, recursively scanning raw/ for .txt/.log files
+             and extracting every serial from lines like:
+             "System Serial Number: 951946000252 (prlpr01)"
+
 Options
 -------
   --login          Force an interactive login (use when session has expired)
@@ -36,6 +41,10 @@ Options
                    (default: 792349000111)
   --serials-file FILE  Path to a text file with one serial number per line to
                    process in bulk (overrides --serials)
+  --raw-dir DIR    Directory to recursively scan for .txt/.log files containing
+                   lines like 'System Serial Number: 951946000252 (host)';
+                   every serial found is processed in bulk (overrides --serials;
+                   --serials-file takes precedence if both are given)
   --field NAME     Column/field name(s) to scrape, space-separated for multiple
                    (default: Part Number, Status, Hw End Of Support Date,
                    Hw Or Sw Service Or Warranty End Date, Hardware Service End Date,
@@ -57,7 +66,7 @@ import re
 import shutil
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
@@ -136,6 +145,33 @@ def wait_for_login(page, url: str):
 
 def is_session_saved() -> bool:
     return (PROFILE_DIR / LOGIN_MARKER).exists()
+
+
+_SERIAL_NUMBER_LINE = re.compile(r"System Serial Number:\s*(\S+)", re.I)
+
+
+def extract_serials_from_raw_dir(raw_dir: str) -> list[str]:
+    """Recursively scan raw_dir for .txt/.log files and pull out every serial
+    number from lines like 'System Serial Number: 951946000252 (host)'.
+
+    Returns unique serials in first-seen order, sorted by file path so runs
+    are reproducible.
+    """
+    seen = set()
+    serials = []
+    for path in sorted(Path(raw_dir).rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in (".txt", ".log"):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for match in _SERIAL_NUMBER_LINE.finditer(text):
+            serial = match.group(1).strip()
+            if serial and serial not in seen:
+                seen.add(serial)
+                serials.append(serial)
+    return serials
 
 
 def backup_data_folder(data_dir: str = "data", backup_root: str = "backup"):
@@ -508,20 +544,30 @@ def get_os_version(page, field: str, timeout: int) -> str | None:
     return None
 
 
+def load_existing_results(path: str) -> list[dict]:
+    """Read previously saved rows from a results CSV, or [] if it doesn't exist."""
+    p = Path(path)
+    if not p.exists():
+        return []
+    with open(p, newline="", encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
+
+
 def save_result(path: str, results_list: list[dict]):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
+    headers = list(dict.fromkeys(key for results in results_list for key in results))
     with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
-        writer.writerow(results_list[0].keys())
+        writer.writerow(headers)
         for results in results_list:
-            writer.writerow(results.values())
+            writer.writerow([results.get(h, "") for h in headers])
     print(f"[+] Wrote result -> {path}")
 
 
 def save_result_text(path: str, results_list: list[dict]):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    headers = list(results_list[0].keys())
-    value_rows = [[str(v) for v in results.values()] for results in results_list]
+    headers = list(dict.fromkeys(key for results in results_list for key in results))
+    value_rows = [[str(results.get(h, "")) for h in headers] for results in results_list]
     widths = [
         max(len(headers[i]), max(len(row[i]) for row in value_rows)) + 3
         for i in range(len(headers))
@@ -536,6 +582,30 @@ def save_result_text(path: str, results_list: list[dict]):
     print(f"[+] Wrote result -> {path}")
 
 
+ALERT_DATE_FIELDS = [
+    "Hw End Of Support Date",
+    "Hw Or Sw Service Or Warranty End Date",
+    "Hardware Service End Date",
+    "Software Service End Date",
+]
+
+
+def compute_alert(results: dict, months: int = 12) -> str:
+    """"Y" if any ALERT_DATE_FIELDS value falls within the next `months` months, else "N"."""
+    threshold = datetime.now() + timedelta(days=round(months * 365 / 12))
+    for field in ALERT_DATE_FIELDS:
+        value = results.get(field, "").strip()
+        if not value or value.upper() == "N":
+            continue
+        try:
+            date = datetime.strptime(value, "%m/%d/%Y")
+        except ValueError:
+            continue
+        if date <= threshold:
+            return "Y"
+    return "N"
+
+
 def process_serial(page, serial: str, args) -> dict:
     """Select `serial` in the slicer and scrape all requested fields for it.
 
@@ -546,9 +616,9 @@ def process_serial(page, serial: str, args) -> dict:
     results = {field: "" for field in args.field}
 
     if not fill_serial_number(page, serial, args.timeout):
-        return {"Serial Number": serial, **results}
+        return {"Serial Number": serial, "Alert": compute_alert(results, args.alert), **results}
 
-    print("[*] Waiting for report to refresh with the serial number filter …")
+    vprint("[*] Waiting for report to refresh with the serial number filter …")
     try:
         page.wait_for_load_state("networkidle", timeout=args.timeout)
     except PWTimeout:
@@ -564,7 +634,7 @@ def process_serial(page, serial: str, args) -> dict:
         vprint(f"[+] {field}: {value}")
 
     # Serial Number is the input, not a scraped field — put it first.
-    return {"Serial Number": serial, **results}
+    return {"Serial Number": serial, "Alert": compute_alert(results, args.alert), **results}
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +648,19 @@ def main():
     parser.add_argument("--no-headless", dest="headless", action="store_false", help="Run with a visible browser window")
     parser.add_argument("--verbose", action="store_true", help="Show detailed step-by-step progress logs (default: minimal output)")
     parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip serials already present in --out and append new results to it instead of "
+        "overwriting, so you can stop and re-run later and pick up where you left off",
+    )
+    parser.add_argument(
+        "--alert",
+        type=int,
+        default=12,
+        metavar="MONTHS",
+        help="Number of months ahead to flag the Alert column as 'Y' (default: 12)",
+    )
+    parser.add_argument(
         "--serials",
         default="792349000111",
         help="Serial number(s) to enter, comma-separated for bulk mode "
@@ -588,6 +671,13 @@ def main():
         default=None,
         help="Path to a text file with one serial number per line to process in bulk "
         "(blank lines and lines starting with '#' are ignored; overrides --serials)",
+    )
+    parser.add_argument(
+        "--raw-dir",
+        default=None,
+        help="Directory to recursively scan for .txt/.log files containing lines like "
+        "'System Serial Number: 951946000252 (host)'; every serial found is processed "
+        "in bulk (overrides --serials; --serials-file takes precedence if both are given)",
     )
     parser.add_argument(
         "--field",
@@ -625,8 +715,30 @@ def main():
         if not serials:
             print(f"[!] No serial numbers found in {args.serials_file}")
             sys.exit(1)
+    elif args.raw_dir:
+        serials = extract_serials_from_raw_dir(args.raw_dir)
+        if not serials:
+            print(f"[!] No serial numbers found under {args.raw_dir}")
+            sys.exit(1)
+        print(f"[*] Found {len(serials)} serial number(s) under {args.raw_dir}")
     else:
         serials = [s.strip() for s in args.serials.split(",") if s.strip()]
+
+    existing_results = []
+    if args.resume:
+        if not args.out:
+            print("[!] --resume requires --out to track already-processed serials — ignoring --resume.")
+        else:
+            existing_results = load_existing_results(args.out)
+            done_serials = {r["Serial Number"] for r in existing_results}
+            before = len(serials)
+            serials = [s for s in serials if s not in done_serials]
+            skipped = before - len(serials)
+            if skipped:
+                print(f"[*] Resuming: skipping {skipped} serial(s) already in {args.out}")
+            if not serials:
+                print("[*] All serials already processed — nothing to do.")
+                sys.exit(0)
 
     backup_data_folder()
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
@@ -675,7 +787,7 @@ def main():
             sys.exit(1)
         time.sleep(2)  # let visuals fully settle
 
-        all_results = []
+        all_results = list(existing_results)
         for i, serial in enumerate(serials):
             if i > 0:
                 clear_all_slicers(page, args.timeout)

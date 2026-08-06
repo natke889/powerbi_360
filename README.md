@@ -2,7 +2,10 @@
 
 Automates selecting a serial number in the "Serial Number" slicer of a Power BI
 report and scrapes fields (Part Number, Status, warranty/support dates, etc.)
-from the resulting table, saving the results to CSV/text files.
+from the resulting table, saving the results to CSV/text files. Each row also
+gets an `Alert` column: `Y` if any of the support/warranty/service dates falls
+within the next 12 months, otherwise `N`. Use `--alert MONTHS` to change that
+window.
 
 ## Prerequisites
 
@@ -118,9 +121,23 @@ python powerbi_360.py --serials 792349000111,951946000252
 
 # or from a file (one serial per line; blank lines / lines starting with '#' ignored)
 python powerbi_360.py --serials-file serials.txt
+
+# or by scanning a directory of raw text/log files (e.g. saved `sysconfig -a`
+# output) for lines like "System Serial Number: 951946000252 (prlpr01)" —
+# searches recursively for .txt and .log files
+python powerbi_360.py --raw-dir raw
 ```
 
-`--serials-file` overrides `--serials` if both are given.
+`--serials-file` overrides `--serials` if both are given; `--raw-dir` overrides
+`--serials` too but `--serials-file` wins if both are given.
+
+If a run gets interrupted (or you just want to add more serials later), add
+`--resume` to skip any serial already present in `--out` and append new results
+to it instead of overwriting:
+
+```bash
+python powerbi_360.py --raw-dir raw --resume
+```
 
 ## Options
 
@@ -131,6 +148,9 @@ python powerbi_360.py --serials-file serials.txt
 | `--no-headless` | Run with a visible browser window |
 | `--serials NUMBER` | Serial number(s) to select, comma-separated for bulk mode (default: `792349000111`) |
 | `--serials-file FILE` | Text file with one serial per line to process in bulk (overrides `--serials`) |
+| `--raw-dir DIR` | Directory to recursively scan for `.txt`/`.log` files containing lines like `System Serial Number: 951946000252 (host)`; every serial found is processed in bulk (overrides `--serials`; `--serials-file` takes precedence if both are given) |
+| `--resume` | Skip serials already present in `--out` and append new results to it instead of overwriting (lets you stop and re-run later) |
+| `--alert MONTHS` | Number of months ahead to flag the `Alert` column as `Y` (default: `12`) |
 | `--field NAME` | Column/field name(s) to scrape, space-separated for multiple (default: Part Number, Status, Hw End Of Support Date, Hw Or Sw Service Or Warranty End Date, Hardware Service End Date, Software Service End Date) |
 | `--verbose` | Show detailed step-by-step progress logs (default: minimal, one line per serial with success/failure) |
 | `--url URL` | Power BI report URL (default: read from `config.ini`'s `[powerbi] url`, falling back to the built-in 360 report) |
